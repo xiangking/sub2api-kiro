@@ -88,7 +88,10 @@ func NewGatewayHandler(
 	// 初始化用户消息串行队列 helper
 	var umqHelper *UserMsgQueueHelper
 	if userMsgQueueService != nil && cfg != nil {
-		umqHelper = NewUserMsgQueueHelper(userMsgQueueService, SSEPingFormatClaude, pingInterval)
+		// Do not send pre-upstream SSE pings on Claude-compatible endpoints.
+		// Claude Code treats HTTP 200 streams without message_start as malformed
+		// if the request later times out while queued.
+		umqHelper = NewUserMsgQueueHelper(userMsgQueueService, SSEPingFormatNone, pingInterval)
 	}
 
 	return &GatewayHandler{
@@ -102,7 +105,7 @@ func NewGatewayHandler(
 		usageRecordWorkerPool:     usageRecordWorkerPool,
 		errorPassthroughService:   errorPassthroughService,
 		contentModerationService:  contentModerationService,
-		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatClaude, pingInterval),
+		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatNone, pingInterval),
 		userMsgQueueHelper:        umqHelper,
 		maxAccountSwitches:        maxAccountSwitches,
 		maxAccountSwitchesGemini:  maxAccountSwitchesGemini,

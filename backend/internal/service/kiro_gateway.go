@@ -96,11 +96,16 @@ func (s *GatewayService) forwardKiro(ctx context.Context, c *gin.Context, accoun
 			c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": "prompt is too long: 200001 tokens > 200000 maximum"}})
 			return nil, fmt.Errorf("kiro context limit exceeded")
 		}
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body}
+		upstreamStatus := normalizeKiroUpstreamStatus(resp.StatusCode, body)
+		if s.shouldFailoverUpstreamError(upstreamStatus) {
+			return nil, &UpstreamFailoverError{StatusCode: upstreamStatus, ResponseBody: body}
 		}
-		c.JSON(mapUpstreamStatusCode(resp.StatusCode), gin.H{"type": "error", "error": gin.H{"type": "upstream_error", "message": "Kiro upstream request failed"}})
-		return nil, fmt.Errorf("kiro upstream error: %d", resp.StatusCode)
+		if upstreamStatus == http.StatusTooManyRequests {
+			c.JSON(http.StatusTooManyRequests, gin.H{"type": "error", "error": gin.H{"type": "rate_limit_error", "message": "Upstream rate limit exceeded, please retry later"}})
+			return nil, fmt.Errorf("kiro upstream error: %d", upstreamStatus)
+		}
+		c.JSON(mapUpstreamStatusCode(upstreamStatus), gin.H{"type": "error", "error": gin.H{"type": "upstream_error", "message": "Kiro upstream request failed"}})
+		return nil, fmt.Errorf("kiro upstream error: %d", upstreamStatus)
 	}
 
 	if parsed.OnUpstreamAccepted != nil {
@@ -648,4 +653,23 @@ func isKiroContextLimit(status int, body []byte) bool {
 	return reason == "CONTENT_LENGTH_EXCEEDS_THRESHOLD" ||
 		strings.Contains(message, "input is too long") ||
 		strings.Contains(message, "too long")
+}
+
+func normalizeKiroUpstreamStatus(status int, body []byte) int {
+	if status == http.StatusTooManyRequests {
+		return status
+	}
+	if status != http.StatusBadRequest {
+		return status
+	}
+	errType := strings.ToLower(gjson.GetBytes(body, "__type").String())
+	reason := strings.ToUpper(gjson.GetBytes(body, "reason").String())
+	message := strings.ToLower(gjson.GetBytes(body, "message").String())
+	if strings.Contains(errType, "throttlingexception") ||
+		reason == "INSUFFICIENT_MODEL_CAPACITY" ||
+		strings.Contains(message, "high traffic") ||
+		strings.Contains(message, "try again shortly") {
+		return http.StatusTooManyRequests
+	}
+	return status
 }
